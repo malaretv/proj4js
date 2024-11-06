@@ -151,7 +151,16 @@ function startTests(chai, proj4, testPoints) {
           });
           describe('proj object', function() {
             it('should work with a 2 element array', function() {
-              var xy = proj4(new proj4.Proj(testPoint.code), testPoint.ll);
+              const ll = [testPoint.ll[0], testPoint.ll[1]];
+              Object.freeze(ll);
+              var xy = proj4(new proj4.Proj(testPoint.code), ll);
+              assert.closeTo(xy[0], testPoint.xy[0], xyEPSLN, 'x is close');
+              assert.closeTo(xy[1], testPoint.xy[1], xyEPSLN, 'y is close');
+            });
+            it('should work wit a 3 element array', function() {
+              const llz = [testPoint.ll[0], testPoint.ll[1], 0];
+              Object.freeze(llz);
+              var xy = proj4(new proj4.Proj(testPoint.code), llz);
               assert.closeTo(xy[0], testPoint.xy[0], xyEPSLN, 'x is close');
               assert.closeTo(xy[1], testPoint.xy[1], xyEPSLN, 'y is close');
             });
@@ -167,10 +176,36 @@ function startTests(chai, proj4, testPoints) {
               assert.closeTo(ll.y, testPoint.ll[1], llEPSLN, 'y is close');
             });
           });
+          describe('proj coord object', function() {
+            it('should not be modified', function() {
+              var expected = {x: 100000, y: 100000};
+              var inpxy = {x: expected.x, y: expected.y};
+              proj4('EPSG:3857', proj4.WGS84, inpxy);
+
+              assert.deepEqual(inpxy, expected, "input is unmodified");
+            });
+          });
         });
       });
     });
     describe('points', function () {
+      it('should not create a z if none was provided', function() {
+        const result = proj4(
+          'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]',
+          'PROJCS["OSGB 1936 / British National Grid",GEOGCS["OSGB 1936",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646,AUTHORITY["EPSG","7001"]],AUTHORITY["EPSG","6277"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4277"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],AUTHORITY["EPSG","27700"],AXIS["Easting",EAST],AXIS["Northing",NORTH]]',
+          {x: -0.12793738, y: 51.507747});
+        assert.closeTo(result.x, 530018.229301635, 1e-6);
+        assert.closeTo(result.y, 180418.4380560551, 1e-6);
+        assert.equal(result.z, undefined);
+      });
+      it('should return null for transform of [0, 0] for EPSG:3413 -> EPSG:3857', function () {
+        var point = proj4.transform(
+          proj4.Proj('+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'),
+          proj4.Proj('EPSG:3857'),
+          [0, 0]
+        );
+        assert.strictEqual(point, null);
+      });
       it('should ignore stuff it does not know', function () {
         var sweref99tm = '+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs';
         var rt90 = '+lon_0=15.808277777799999 +lat_0=0.0 +k=1.0 +x_0=1500000.0 +y_0=0.0 +proj=tmerc +ellps=bessel +units=m +towgs84=414.1,41.3,603.1,-0.855,2.141,-7.023,0 +no_defs';
@@ -391,7 +426,67 @@ function startTests(chai, proj4, testPoints) {
       });
     });
 
-    describe('Nadgrids', function() {
+    describe('Nadgrids BETA2007', function() {
+      var tests = [
+        ['EPSG:31466', 'EPSG:4326', 2559552, 5670982, 6.850861772, 51.170707759, 0.0000001, 0.01],
+        ['EPSG:31466', 'EPSG:3857', 2559552, 5670982, 762634.443931574, 6651545.680265270, 0.01, 0.01],
+        ['EPSG:31466', 'EPSG:25832', 2559552, 5670982, 349757.381712518, 5671004.065049540, 0.01, 0.01],
+      ];
+
+      function initializeNadgrid(buffer) {
+        proj4.nadgrid('BETA2007.gsb', buffer);
+        proj4.defs('EPSG:31466', '+proj=tmerc +lat_0=0 +lon_0=6 +k=1 +x_0=2500000 +y_0=0 +ellps=bessel +nadgrids=BETA2007.gsb +units=m +no_defs +type=crs');
+        proj4.defs('EPSG:25832', '+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs +type=crs');
+      }
+
+      before(function(done) {
+        if (typeof XMLHttpRequest !== 'undefined') {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', 'BETA2007.gsb', true);
+          xhr.responseType = 'arraybuffer';
+          xhr.addEventListener('load', function() {
+            initializeNadgrid(xhr.response);
+            done();
+          });
+          xhr.addEventListener('error', done);
+          xhr.send();
+        } else if (typeof require === 'function') {
+          const fs = require('fs');
+          const path = require('path');
+          fs.readFile(path.join(__dirname, 'BETA2007.gsb'), function(err, data) {
+            if (err) {
+              done(err);
+            } else {
+              initializeNadgrid(data.buffer);
+              done();
+            }
+          })
+        }
+      });
+
+      tests.forEach(function(test) {
+        var fromProj = test[0];
+        var toProj = test[1];
+        var fromX = test[2];
+        var fromY = test[3];
+        var toX = test[4];
+        var toY = test[5];
+        var fromPrecision = test[6];
+        var toPrecision = test[7];
+        it('should transform ' + fromProj + ' to ' + toProj, function () {
+          var transformed = proj4(fromProj, toProj, [fromX, fromY]);
+          assert.approximately(transformed[0], toX, fromPrecision);
+          assert.approximately(transformed[1], toY, fromPrecision);
+        });
+        it('should transform ' + toProj + ' to ' + fromProj, function () {
+          var transformed = proj4(toProj, fromProj, [toX, toY]);
+          assert.approximately(transformed[0], fromX, toPrecision);
+          assert.approximately(transformed[1], fromY, toPrecision);
+        });
+      });
+    });
+
+    describe('Nadgrids ntv2', function() {
       var tests = [
         [-44.382211538462, 40.3768, -44.380749, 40.377457], // just inside the lower limit
         [-87.617788, 59.623262, -87.617659, 59.623441], // just inside the upper limit
